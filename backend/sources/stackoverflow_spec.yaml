@@ -1,0 +1,81 @@
+name: stackoverflow
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+inputs:
+  SO_SEARCH_TERM:
+    kind: variable
+    hint: "Project name to search on Stack Overflow (e.g. 'zed editor')"
+
+base_url: "https://api.stackexchange.com/2.3"
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Accept-Encoding
+      from: literal
+      value: "identity"
+
+tables:
+  - name: questions
+    description: >
+      Stack Overflow questions matching the search term.
+      'score' is the net vote count, 'answer_count' is number of answers.
+      'is_answered' is true when an accepted answer exists.
+    request:
+      method: GET
+      path: "/search?order=desc&sort=activity&intitle={{input.SO_SEARCH_TERM}}&site=stackoverflow&pagesize=50"
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: none
+    columns:
+      - name: question_id
+        type: Int64
+      - name: title
+        type: Utf8
+      - name: link
+        type: Utf8
+      - name: score
+        type: Int64
+      - name: answer_count
+        type: Int64
+      - name: view_count
+        type: Int64
+      - name: is_answered
+        type: Boolean
+      - name: creation_date
+        type: Int64
+      - name: owner__display_name
+        type: Utf8
+
+  - name: answers
+    description: >
+      Stack Overflow answers matching the search term.
+    request:
+      method: GET
+      path: "/search/excerpts?order=desc&sort=activity&q={{input.SO_SEARCH_TERM}}&site=stackoverflow&pagesize=30"
+    response:
+      rows_path:
+        - items
+    pagination:
+      mode: none
+    columns:
+      - name: answer_id
+        type: Int64
+      - name: question_id
+        type: Int64
+      - name: title
+        type: Utf8
+      - name: excerpt
+        type: Utf8
+      - name: score
+        type: Int64
+      - name: owner__display_name
+        type: Utf8
+
+test_queries:
+  - "SELECT title, score, answer_count, is_answered FROM stackoverflow.questions LIMIT 5"
+  - "SELECT title, excerpt, score FROM stackoverflow.answers LIMIT 5"

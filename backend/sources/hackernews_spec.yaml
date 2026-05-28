@@ -1,0 +1,71 @@
+name: hackernews
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+inputs:
+  HN_SEARCH_TERM:
+    kind: variable
+    hint: "Project name to search on Hacker News (e.g. 'zed editor')"
+
+base_url: "https://hn.algolia.com/api/v1"
+
+tables:
+  - name: stories
+    description: >
+      Hacker News stories matching the search term via Algolia.
+      'points' is the HN score, 'num_comments' is comment count.
+    request:
+      method: GET
+      path: "/search?query={{input.HN_SEARCH_TERM}}&tags=story&hitsPerPage=50"
+    response:
+      rows_path:
+        - hits
+    pagination:
+      mode: none
+    columns:
+      - name: objectID
+        type: Utf8
+      - name: title
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: points
+        type: Int64
+      - name: num_comments
+        type: Int64
+      - name: created_at
+        type: Utf8
+      - name: author
+        type: Utf8
+      - name: story_text
+        type: Utf8
+
+  - name: comments
+    description: >
+      Hacker News comments matching the search term via Algolia.
+    request:
+      method: GET
+      path: "/search?query={{input.HN_SEARCH_TERM}}&tags=comment&hitsPerPage=50"
+    response:
+      rows_path:
+        - hits
+    pagination:
+      mode: none
+    columns:
+      - name: objectID
+        type: Utf8
+      - name: comment_text
+        type: Utf8
+      - name: author
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: parent_id
+        type: Utf8
+      - name: story_title
+        type: Utf8
+
+test_queries:
+  - "SELECT title, points, num_comments FROM hackernews.stories LIMIT 5"
+  - "SELECT author, comment_text FROM hackernews.comments LIMIT 5"

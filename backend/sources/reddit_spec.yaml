@@ -1,0 +1,45 @@
+name: reddit
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+inputs:
+  REDDIT_SEARCH_TERM:
+    kind: variable
+    hint: "Project name to search on Reddit (e.g. 'zed editor')"
+
+base_url: "http://localhost:8000"
+
+tables:
+  - name: posts
+    description: >
+      Reddit posts via CrewSight's proxy endpoint, which fetches from Reddit and
+      flattens the nested data structure before Coral queries it.
+    request:
+      method: GET
+      path: "/proxy/reddit?q={{input.REDDIT_SEARCH_TERM}}"
+    response:
+      rows_path:
+        - posts
+    pagination:
+      mode: none
+    columns:
+      - name: id
+        type: Utf8
+      - name: title
+        type: Utf8
+      - name: url
+        type: Utf8
+      - name: score
+        type: Int64
+      - name: num_comments
+        type: Int64
+      - name: subreddit
+        type: Utf8
+      - name: permalink
+        type: Utf8
+      - name: author
+        type: Utf8
+
+test_queries:
+  - "SELECT title, score, subreddit FROM reddit.posts LIMIT 5"

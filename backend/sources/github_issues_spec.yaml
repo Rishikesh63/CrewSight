@@ -1,0 +1,94 @@
+name: gh
+version: 0.1.0
+dsl_version: 3
+backend: http
+
+inputs:
+  GITHUB_TOKEN:
+    kind: secret
+    hint: "GitHub personal access token with repo read scope."
+  GITHUB_OWNER:
+    kind: variable
+    hint: "Repository owner (e.g. 'zed-industries')"
+  GITHUB_REPO_NAME:
+    kind: variable
+    hint: "Repository name (e.g. 'zed')"
+
+base_url: "https://api.github.com"
+
+auth:
+  type: HeaderAuth
+  headers:
+    - name: Authorization
+      from: template
+      template: "Bearer {{input.GITHUB_TOKEN}}"
+    - name: Accept
+      from: literal
+      value: "application/vnd.github.v3+json"
+    - name: X-GitHub-Api-Version
+      from: literal
+      value: "2022-11-28"
+
+tables:
+  - name: issues
+    description: >
+      Open GitHub issues, most recently updated first.
+      Returns the first page (100 issues) only — no pagination.
+      This avoids timeouts on repos with thousands of open issues.
+    request:
+      method: GET
+      path: "/repos/{{input.GITHUB_OWNER}}/{{input.GITHUB_REPO_NAME}}/issues?state=open&per_page=100&page=1&sort=updated&direction=desc"
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: number
+        type: Int64
+      - name: title
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: comments
+        type: Int64
+      - name: user__login
+        type: Utf8
+      - name: body
+        type: Utf8
+
+  - name: pull_requests
+    description: >
+      Open pull requests. GitHub's issues endpoint returns both issues
+      and PRs; this table filters to PRs only via the /pulls endpoint.
+    request:
+      method: GET
+      path: "/repos/{{input.GITHUB_OWNER}}/{{input.GITHUB_REPO_NAME}}/pulls?state=open&per_page=50&page=1&sort=updated&direction=desc"
+    response:
+      rows_path: []
+    pagination:
+      mode: none
+    columns:
+      - name: number
+        type: Int64
+      - name: title
+        type: Utf8
+      - name: state
+        type: Utf8
+      - name: created_at
+        type: Utf8
+      - name: updated_at
+        type: Utf8
+      - name: html_url
+        type: Utf8
+      - name: user__login
+        type: Utf8
+
+test_queries:
+  - "SELECT number, title, comments FROM gh.issues LIMIT 5"
+  - "SELECT number, title, user__login FROM gh.pull_requests LIMIT 5"
