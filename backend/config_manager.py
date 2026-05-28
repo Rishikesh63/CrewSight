@@ -9,7 +9,10 @@ import json
 import os
 from pathlib import Path
 
-CONFIG_FILE = Path(__file__).parent / "integration_config.json"
+# On Fly.io the /data/coral volume persists across restarts — store config there.
+# Locally (no volume) fall back to the backend directory.
+_DATA_DIR = Path(os.getenv("DATA_DIR", Path(__file__).parent))
+CONFIG_FILE = _DATA_DIR / "integration_config.json"
 ENV_FILE = Path(__file__).parent / ".env"
 
 _DEFAULTS: dict = {

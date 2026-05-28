@@ -12,11 +12,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Install Coral CLI ─────────────────────────────────────────────────────────
-# Official install script — places the binary in /usr/local/bin/coral
-RUN curl -fsSL https://install.withcoral.com | sh
-
-# Verify install
-RUN coral --version
+ENV PATH="/root/.local/bin:${PATH}"
+RUN curl -fsSL https://withcoral.com/install.sh | sh \
+    && coral --version
 
 # ── Python app ────────────────────────────────────────────────────────────────
 WORKDIR /app

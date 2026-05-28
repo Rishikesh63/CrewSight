@@ -279,10 +279,62 @@ async def get_config():
     return get_masked_config()
 
 
+def _register_coral_source(source: str, cfg: dict) -> tuple[bool, str]:
+    """
+    Register (or re-register) a Coral source by running coral source add
+    with credentials passed as environment variables — no interactive prompts.
+    """
+    import subprocess as _sp
+    from pathlib import Path as _Path
+
+    _SPEC = {
+        "github":        "sources/github_issues_spec.yaml",
+        "hackernews":    "sources/hackernews_spec.yaml",
+        "reddit":        "sources/reddit_spec.yaml",
+        "stackoverflow": "sources/stackoverflow_spec.yaml",
+    }
+    _SCHEMA = {"github": "gh", "hackernews": "hackernews", "reddit": "reddit", "stackoverflow": "stackoverflow"}
+    _ENV_VARS: dict[str, Any] = {
+        "github": lambda c: {
+            "GITHUB_TOKEN":     c.get("token", ""),
+            "GITHUB_OWNER":     c.get("repo", "/").split("/")[0],
+            "GITHUB_REPO_NAME": (c.get("repo", "/").split("/") + [""])[1],
+        },
+        "hackernews":    lambda c: {"HN_SEARCH_TERM":     c.get("search_term", "")},
+        "reddit":        lambda c: {"REDDIT_SEARCH_TERM": c.get("search_term", "")},
+        "stackoverflow": lambda c: {"SO_SEARCH_TERM":     c.get("search_term", "")},
+    }
+
+    spec = _SPEC.get(source)
+    if not spec:
+        return False, f"Unknown source: {source}"
+
+    ev   = _ENV_VARS[source](cfg)
+    env  = {**os.environ, **ev}
+    cwd  = str(_Path(__file__).parent)
+
+    # Remove existing registration (ignore failure if not registered)
+    _sp.run(["coral", "source", "remove", _SCHEMA[source]], env=env,
+            capture_output=True, cwd=cwd)
+
+    result = _sp.run(
+        ["coral", "source", "add", "--file", spec],
+        env=env, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=30, cwd=cwd,
+    )
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "unknown error").strip()
+        logger.warning("coral source add failed for %s: %s", source, err)
+        return False, err
+
+    logger.info("Coral source registered: %s", source)
+    return True, "registered"
+
+
 @app.post("/api/config/{source}", tags=["config"])
 async def update_config(source: str, body: dict):
     """
-    Update config for a single integration source.
+    Update config for a single integration source and register it with Coral.
 
     Body keys vary by source:
       github:        { token, repo }
@@ -290,7 +342,8 @@ async def update_config(source: str, body: dict):
       reddit:        { search_term }
       stackoverflow: { search_term }
 
-    Saves to integration_config.json, syncs to .env, clears all caches.
+    Saves to integration_config.json, syncs to .env, registers Coral source,
+    clears all caches.
     """
     valid_sources = {"github", "hackernews", "reddit", "stackoverflow"}
     if source not in valid_sources:
@@ -301,8 +354,11 @@ async def update_config(source: str, body: dict):
     config[source]["enabled"] = True
     save_config(config)
     cache.clear()
-    logger.info("Config updated for source: %s", source)
-    return {"status": "updated", "source": source}
+
+    # Register with Coral in background thread (coral source add is blocking)
+    ok, msg = await asyncio.to_thread(_register_coral_source, source, config[source])
+    logger.info("Config updated for source: %s (coral: %s)", source, msg)
+    return {"status": "updated", "source": source, "coral": "registered" if ok else msg}
 
 
 @app.delete("/api/config/{source}", tags=["config"])
