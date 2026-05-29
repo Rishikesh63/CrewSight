@@ -8,7 +8,9 @@ FROM python:3.11-slim
 
 # ── System deps ───────────────────────────────────────────────────────────────
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get install -y --no-install-recommends \
+       curl ca-certificates \
+       gnome-keyring libsecret-1-0 dbus-x11 \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Install Coral CLI ─────────────────────────────────────────────────────────

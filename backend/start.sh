@@ -33,9 +33,18 @@ else
     echo "[start.sh] Run: fly volumes create coral_data --size 1 --region <region>"
 fi
 
+# ── Start D-Bus + GNOME Keyring (needed for coral source add on Linux) ───────
+if command -v dbus-launch &>/dev/null; then
+    eval $(dbus-launch --sh-syntax) 2>/dev/null || true
+fi
+if command -v gnome-keyring-daemon &>/dev/null; then
+    eval $(gnome-keyring-daemon --start --components=secrets 2>/dev/null) || true
+    export GNOME_KEYRING_CONTROL GNOME_KEYRING_PID SSH_AUTH_SOCK
+fi
+
 # ── Show configured sources (informational) ──────────────────────────────────
 echo "[start.sh] Coral sources:"
-coral sources list 2>/dev/null || echo "  (none configured yet)"
+coral source list 2>/dev/null || echo "  (none configured yet)"
 
 # ── Start the FastAPI server ──────────────────────────────────────────────────
 PORT="${PORT:-8000}"
