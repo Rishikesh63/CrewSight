@@ -195,6 +195,7 @@ def get_hn_stories() -> list[dict]:
 def get_reddit_posts() -> list[dict]:
     """
     Fetch recent Reddit posts via Coral querying the local proxy endpoint.
+    Falls back to direct urllib fetch if Coral source is not registered.
     """
     cache_key = "reddit_posts"
     cached = cache.get(cache_key)
@@ -208,9 +209,38 @@ def get_reddit_posts() -> list[dict]:
             "ORDER BY score DESC LIMIT 20"
         )
         cache.set(cache_key, rows, ttl_seconds=CACHE_TTL)
-        logger.info(f"Fetched {len(rows)} Reddit posts")
+        logger.info(f"Fetched {len(rows)} Reddit posts via Coral")
         return rows
-    except CoralError as exc:
+    except CoralError:
+        pass  # fall through to direct fetch
+
+    # Direct urllib fallback when Coral source is not yet registered
+    try:
+        import urllib.request
+        term = SEARCH_TERM.replace(" ", "+")
+        url = f"https://www.reddit.com/search.json?q={term}&sort=new&limit=25&type=link"
+        req = urllib.request.Request(url, headers={"User-Agent": "CrewSight/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+        rows = []
+        for child in data.get("data", {}).get("children", []):
+            post = child.get("data", {})
+            if not post:
+                continue
+            permalink = post.get("permalink", "")
+            if permalink and not permalink.startswith("http"):
+                permalink = f"https://reddit.com{permalink}"
+            rows.append({
+                "id": post.get("id"), "title": post.get("title"),
+                "url": post.get("url"), "score": post.get("score"),
+                "num_comments": post.get("num_comments"),
+                "subreddit": post.get("subreddit"),
+                "permalink": permalink, "author": post.get("author"),
+            })
+        cache.set(cache_key, rows, ttl_seconds=CACHE_TTL)
+        logger.info(f"Fetched {len(rows)} Reddit posts via direct fetch")
+        return rows
+    except Exception as exc:
         logger.warning(f"Reddit posts skipped: {exc}")
         return []
 
@@ -480,7 +510,6 @@ def check_sources() -> dict[str, dict]:
     test_queries = {
         "github":        "SELECT number FROM gh.issues LIMIT 1",
         "hackernews":    "SELECT title FROM hackernews.stories LIMIT 1",
-        "reddit":        "SELECT title FROM reddit.posts LIMIT 1",
         "stackoverflow": "SELECT title FROM stackoverflow.questions LIMIT 1",
     }
 
@@ -491,6 +520,20 @@ def check_sources() -> dict[str, dict]:
             sources[name] = {"active": True, "error": None}
         except CoralError as exc:
             sources[name] = {"active": False, "error": str(exc)[:120]}
+
+    # Reddit fetches directly via urllib — check by attempting a quick fetch
+    try:
+        import urllib.request as _ur
+        term = SEARCH_TERM.replace(" ", "+") or "test"
+        req = _ur.Request(
+            f"https://www.reddit.com/search.json?q={term}&limit=1",
+            headers={"User-Agent": "CrewSight/1.0"},
+        )
+        with _ur.urlopen(req, timeout=10):
+            pass
+        sources["reddit"] = {"active": True, "error": None}
+    except Exception as exc:
+        sources["reddit"] = {"active": False, "error": str(exc)[:120]}
 
     cache.set(cache_key, sources, ttl_seconds=60)
     return sources
