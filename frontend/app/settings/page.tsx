@@ -104,9 +104,10 @@ export default function SettingsPage() {
       await saveIntegration(source, values)
       setSaved(source)
       setTimeout(() => setSaved(null), 2500)
-      // Refresh config to show masked values
-      const updated = await fetchConfig()
+      // Refresh config + source status after Coral registration
+      const [updated, updatedSources] = await Promise.all([fetchConfig(), fetchSources()])
       setConfig(updated)
+      setSources(updatedSources)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Save failed')
     } finally {
@@ -155,9 +156,8 @@ export default function SettingsPage() {
       <main className="max-w-4xl mx-auto px-4 sm:px-6 py-8">
         <div className="mb-6">
           <p className="text-sm text-gray-400">
-            Configure the data sources CrewSight queries via Coral. After saving, run the
-            shown <code className="text-xs bg-gray-800 px-1.5 py-0.5 rounded text-gray-300">coral source add</code> command
-            to register the source with Coral.
+            Configure the data sources CrewSight queries via Coral. Saving automatically
+            registers the source — the status badge will update to <span className="text-green-400">Connected</span> once done.
           </p>
         </div>
 
