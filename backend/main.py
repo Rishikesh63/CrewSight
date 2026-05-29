@@ -304,6 +304,11 @@ def _register_coral_source(source: str, cfg: dict) -> tuple[bool, str]:
         "stackoverflow": lambda c: {"SO_SEARCH_TERM":     c.get("search_term", "")},
     }
 
+    # Reddit: cloud providers (Fly.io) are blocked by Reddit's API (HTTP 403).
+    # Data is fetched via direct urllib in coral_client.py — no Coral source needed.
+    if source == "reddit":
+        return True, "ok (direct fetch)"
+
     spec = _SPEC.get(source)
     if not spec:
         return False, f"Unknown source: {source}"

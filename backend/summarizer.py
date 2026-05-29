@@ -60,16 +60,21 @@ async def _run_mcp_triage() -> str:
 
             # Discover Coral's MCP tools (sql, list_catalog, search_catalog, etc.)
             tools_response = await session.list_tools()
-            tools = [
-                {
+            tools = []
+            for t in tools_response.tools:
+                raw = t.inputSchema if isinstance(t.inputSchema, dict) else {}
+                # Anthropic requires input_schema to be type:object at the root
+                schema: dict = {
+                    "type": "object",
+                    "properties": raw.get("properties", {}),
+                }
+                if "required" in raw:
+                    schema["required"] = raw["required"]
+                tools.append({
                     "name": t.name,
                     "description": t.description or "",
-                    "input_schema": t.inputSchema or {
-                        "type": "object", "properties": {}
-                    },
-                }
-                for t in tools_response.tools
-            ]
+                    "input_schema": schema,
+                })
             logger.info("Coral MCP tools: %s", [t["name"] for t in tools])
 
             client = _get_client()
