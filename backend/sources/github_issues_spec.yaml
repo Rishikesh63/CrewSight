@@ -4,9 +4,6 @@ dsl_version: 3
 backend: http
 
 inputs:
-  GITHUB_TOKEN:
-    kind: secret
-    hint: "GitHub personal access token with repo read scope."
   GITHUB_OWNER:
     kind: variable
     hint: "Repository owner (e.g. 'zed-industries')"
@@ -19,9 +16,6 @@ base_url: "https://api.github.com"
 auth:
   type: HeaderAuth
   headers:
-    - name: Authorization
-      from: template
-      template: "Bearer {{input.GITHUB_TOKEN}}"
     - name: Accept
       from: literal
       value: "application/vnd.github.v3+json"

@@ -296,7 +296,6 @@ def _register_coral_source(source: str, cfg: dict) -> tuple[bool, str]:
     _SCHEMA = {"github": "gh", "hackernews": "hackernews", "reddit": "reddit", "stackoverflow": "stackoverflow"}
     _ENV_VARS: dict[str, Any] = {
         "github": lambda c: {
-            "GITHUB_TOKEN":     c.get("token", ""),
             "GITHUB_OWNER":     c.get("repo", "/").split("/")[0],
             "GITHUB_REPO_NAME": (c.get("repo", "/").split("/") + [""])[1],
         },
@@ -350,7 +349,13 @@ async def update_config(source: str, body: dict):
         raise HTTPException(status_code=400, detail=f"Unknown source: {source}. Valid: {valid_sources}")
 
     config = load_config()
-    config[source].update({k: v for k, v in body.items() if k != "enabled"})
+    for k, v in body.items():
+        if k == "enabled":
+            continue
+        # Don't overwrite a stored secret with an empty value (masked field was sent as-is)
+        if not v and config[source].get(k):
+            continue
+        config[source][k] = v
     config[source]["enabled"] = True
     save_config(config)
     cache.clear()

@@ -24,15 +24,14 @@ const PLATFORMS = [
     id: 'github' as const,
     name: 'GitHub',
     icon: '🐙',
-    description: 'Track open issues from any public or private repository.',
+    description: 'Track open issues from any public repository. No token needed.',
     color: 'border-gray-700 hover:border-gray-600',
     accentBg: 'bg-gray-800/60',
     fields: [
       { key: 'repo', label: 'Repository', placeholder: 'owner/repo  (e.g. zed-industries/zed)', secret: false },
-      { key: 'token', label: 'Personal Access Token', placeholder: 'ghp_…', secret: true },
     ],
     coralCmd: (cfg: Record<string, string>) =>
-      `coral source add --file sources/github_issues_spec.yaml\n# Enter when prompted:\n#   GITHUB_TOKEN    → ${cfg.token || '<your token>'}\n#   GITHUB_OWNER    → ${(cfg.repo || 'owner/repo').split('/')[0]}\n#   GITHUB_REPO_NAME → ${(cfg.repo || 'owner/repo').split('/')[1] || 'repo'}`,
+      `coral source add --file sources/github_issues_spec.yaml\n# Enter when prompted:\n#   GITHUB_OWNER     → ${(cfg.repo || 'owner/repo').split('/')[0]}\n#   GITHUB_REPO_NAME → ${(cfg.repo || 'owner/repo').split('/')[1] || 'repo'}`,
   },
   {
     id: 'hackernews' as const,
@@ -232,7 +231,8 @@ function IntegrationCard({
     if (open) {
       const initial: Record<string, string> = {}
       for (const f of platform.fields) {
-        initial[f.key] = config[f.key] ?? ''
+        // Never pre-fill secret fields — user must re-enter to update
+        initial[f.key] = f.secret ? '' : (config[f.key] ?? '')
       }
       setValues(initial)
     }
