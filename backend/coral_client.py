@@ -35,6 +35,23 @@ _GITHUB_OWNER, _GITHUB_REPO = (_github_repo.split("/", 1) + [""])[:2]
 SEARCH_TERM = os.getenv("SEARCH_TERM", _GITHUB_REPO.replace("-", " "))
 
 
+def _current_search_term() -> str:
+    """
+    Read search term dynamically from saved config so it reflects what the
+    user set via the Settings page — not just the startup environment variable.
+    """
+    try:
+        from config_manager import load_config
+        cfg = load_config()
+        for src in ("hackernews", "reddit", "stackoverflow"):
+            term = (cfg.get(src) or {}).get("search_term", "")
+            if term:
+                return term
+    except Exception:
+        pass
+    return SEARCH_TERM
+
+
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -217,7 +234,7 @@ def get_reddit_posts() -> list[dict]:
     # Direct urllib fallback when Coral source is not yet registered
     try:
         import urllib.request
-        term = SEARCH_TERM.replace(" ", "+")
+        term = _current_search_term().replace(" ", "+")
         url = f"https://www.reddit.com/search.json?q={term}&sort=new&limit=25&type=link"
         req = urllib.request.Request(url, headers={"User-Agent": "CrewSight/1.0"})
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -524,7 +541,7 @@ def check_sources() -> dict[str, dict]:
     # Reddit fetches directly via urllib — check by attempting a quick fetch
     try:
         import urllib.request as _ur
-        term = SEARCH_TERM.replace(" ", "+") or "test"
+        term = _current_search_term().replace(" ", "+") or "test"
         req = _ur.Request(
             f"https://www.reddit.com/search.json?q={term}&limit=1",
             headers={"User-Agent": "CrewSight/1.0"},
