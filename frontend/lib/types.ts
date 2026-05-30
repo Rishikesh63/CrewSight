@@ -90,6 +90,13 @@ export interface IssueDetailResponse {
   summary: string
 }
 
+export interface MCPQuery {
+  tool: string
+  input: Record<string, unknown>
+  sql?: string
+  rows?: number
+}
+
 export interface IntegrationConfig {
   token?: string
   repo?: string

@@ -165,12 +165,12 @@ async def get_summary():
     try:
         cached_val = cache.get(cache_key)
         if cached_val is not None:
-            return {"summary": cached_val, "cached": True}
+            return {"summary": cached_val["text"], "mcp_queries": cached_val.get("queries", []), "cached": True}
 
         issues = await asyncio.to_thread(get_issue_landscape)
-        summary = await asyncio.to_thread(generate_triage, issues)
-        cache.set(cache_key, summary)
-        return {"summary": summary, "cached": False}
+        summary, mcp_queries = await asyncio.to_thread(generate_triage, issues)
+        cache.set(cache_key, {"text": summary, "queries": mcp_queries})
+        return {"summary": summary, "mcp_queries": mcp_queries, "cached": False}
     except CoralError as exc:
         logger.error("GET /api/summary CoralError: %s", exc)
         raise HTTPException(status_code=503, detail=f"Coral query failed: {exc}")
@@ -385,13 +385,22 @@ async def update_config(source: str, body: dict):
 
 @app.delete("/api/config/{source}", tags=["config"])
 async def disable_config(source: str):
-    """Disable an integration source (keeps stored values, just marks as disabled)."""
+    """Disable a source: marks as disabled in config and removes the Coral registration."""
+    import subprocess as _sp
+    _SCHEMA = {"github": "gh", "hackernews": "hackernews", "reddit": "reddit", "stackoverflow": "stackoverflow"}
     config = load_config()
     if source not in config:
         raise HTTPException(status_code=400, detail=f"Unknown source: {source}")
     config[source]["enabled"] = False
     save_config(config)
     cache.clear()
+    cache.delete("sources_status")  # force fresh check_sources() on next request
+    # Remove Coral source registration so status reflects the change immediately
+    schema = _SCHEMA.get(source, source)
+    await asyncio.to_thread(
+        lambda: _sp.run(["coral", "source", "remove", schema], capture_output=True)
+    )
+    logger.info("Disabled and removed Coral source: %s", source)
     return {"status": "disabled", "source": source}
 
 
@@ -416,20 +425,24 @@ async def reddit_proxy(q: str = ""):
     Reddit wraps every post in {kind, data: {...}} which Coral DSL v3 can't reach.
     This proxy unwraps it and returns a plain array under a 'posts' key.
     """
-    import urllib.request as _urllib
-    import json as _json
+    import requests as _requests
 
-    term = (q or "").replace(" ", "+")
+    term = q or ""
     if not term:
         return {"posts": []}
 
     try:
-        req = _urllib.Request(
-            f"https://www.reddit.com/search.json?q={term}&sort=new&limit=25&type=link",
-            headers={"User-Agent": "CrewSight/1.0"},
+        resp = _requests.get(
+            "https://www.reddit.com/search.json",
+            params={"q": term, "sort": "new", "limit": 25, "type": "link"},
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+            },
+            timeout=15,
         )
-        with _urllib.urlopen(req, timeout=15) as resp:
-            data = _json.loads(resp.read())
+        resp.raise_for_status()
+        data = resp.json()
     except Exception as exc:
         logger.warning("Reddit proxy fetch failed: %s", exc)
         return {"posts": []}

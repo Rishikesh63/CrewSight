@@ -76,6 +76,7 @@ export default function DashboardPage() {
   const [activeView, setActiveView] = useState<ActiveView>('issues')
   const [sources, setSources]       = useState<SourceStatus[]>([])
   const [summary, setSummary]       = useState<string | null>(null)
+  const [mcpQueries, setMcpQueries] = useState<{tool:string;sql?:string;rows?:number;input:Record<string,unknown>}[]>([])
   const [summaryAt, setSummaryAt]   = useState<string | null>(null)
   const [loading, setLoading]       = useState(true)
   const [error, setError]           = useState<string | null>(null)
@@ -95,14 +96,15 @@ export default function DashboardPage() {
     setError(null)
 
     try {
-      const [issueData, summaryText, sourcesData, discussionsData] = await Promise.all([
+      const [issueData, summaryData, sourcesData, discussionsData] = await Promise.all([
         fetchIssues(),
         fetchSummary(),
         fetchSources(),
         fetchDiscussions(),
       ])
       setData(issueData)
-      setSummary(summaryText)
+      setSummary(summaryData.summary)
+      setMcpQueries(summaryData.mcp_queries ?? [])
       setSummaryAt(new Date().toISOString())
       setSources(sourcesData)
       setDiscussions(discussionsData)
@@ -220,7 +222,7 @@ export default function DashboardPage() {
         )}
 
         {/* ── AI triage summary ── */}
-        <TriageSummary summary={summary} generatedAt={summaryAt} />
+        <TriageSummary summary={summary} generatedAt={summaryAt} mcpQueries={mcpQueries} />
 
       </main>
     </div>

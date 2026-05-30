@@ -116,9 +116,12 @@ export default function SettingsPage() {
 
   const handleDisable = async (source: string) => {
     try {
+      // Optimistically mark as disconnected immediately
+      setSources(prev => prev.map(s => s.name === source ? { ...s, active: false } : s))
       await disableIntegration(source)
-      const updated = await fetchConfig()
+      const [updated, updatedSources] = await Promise.all([fetchConfig(), fetchSources()])
       setConfig(updated)
+      setSources(updatedSources)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to disable')
     }
@@ -269,14 +272,26 @@ function IntegrationCard({
           )}
         </div>
 
-        <button
-          onClick={() => setOpen((v) => !v)}
-          className="flex-shrink-0 text-xs px-3 py-1.5 rounded-lg border border-gray-700
-                     text-gray-300 hover:text-white hover:border-gray-500
-                     transition-colors duration-150"
-        >
-          {open ? 'Close' : 'Configure'}
-        </button>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {!open && isConnected && (
+            <button
+              onClick={onDisable}
+              className="text-xs px-3 py-1.5 rounded-lg border border-red-900/50
+                         text-red-400 hover:text-red-300 hover:border-red-700
+                         transition-colors duration-150"
+            >
+              Disconnect
+            </button>
+          )}
+          <button
+            onClick={() => setOpen((v) => !v)}
+            className="text-xs px-3 py-1.5 rounded-lg border border-gray-700
+                       text-gray-300 hover:text-white hover:border-gray-500
+                       transition-colors duration-150"
+          >
+            {open ? 'Close' : 'Configure'}
+          </button>
+        </div>
       </div>
 
       {/* Expanded form */}

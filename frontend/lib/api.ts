@@ -88,9 +88,8 @@ export async function fetchIssues(): Promise<DashboardData> {
  * Fetch the AI-generated triage briefing.
  * Maps to GET /api/summary
  */
-export async function fetchSummary(): Promise<string> {
-  const data = await fetchJSON<{ summary: string; cached: boolean }>('/api/summary')
-  return data.summary
+export async function fetchSummary(): Promise<{ summary: string; mcp_queries: import('./types').MCPQuery[] }> {
+  return fetchJSON<{ summary: string; mcp_queries: import('./types').MCPQuery[]; cached: boolean }>('/api/summary')
 }
 
 /**

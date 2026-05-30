@@ -211,8 +211,8 @@ def get_hn_stories() -> list[dict]:
 
 def get_reddit_posts() -> list[dict]:
     """
-    Fetch recent Reddit posts via Coral querying the local proxy endpoint.
-    Falls back to direct urllib fetch if Coral source is not registered.
+    Fetch Reddit posts via direct urllib (Reddit blocks cloud IPs for the Coral proxy).
+    Always uses urllib — no Coral dependency for data fetching.
     """
     cache_key = "reddit_posts"
     cached = cache.get(cache_key)
@@ -220,25 +220,23 @@ def get_reddit_posts() -> list[dict]:
         return cached
 
     try:
-        rows = run_query(
-            "SELECT id, title, url, score, num_comments, subreddit, permalink, author "
-            "FROM reddit.posts "
-            "ORDER BY score DESC LIMIT 20"
+        import requests as _requests
+        term = _current_search_term()
+        if not term:
+            return []
+        url = "https://www.reddit.com/search.json"
+        resp = _requests.get(
+            url,
+            params={"q": term, "sort": "new", "limit": 25, "type": "link"},
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            timeout=15,
         )
-        cache.set(cache_key, rows, ttl_seconds=CACHE_TTL)
-        logger.info(f"Fetched {len(rows)} Reddit posts via Coral")
-        return rows
-    except CoralError:
-        pass  # fall through to direct fetch
-
-    # Direct urllib fallback when Coral source is not yet registered
-    try:
-        import urllib.request
-        term = _current_search_term().replace(" ", "+")
-        url = f"https://www.reddit.com/search.json?q={term}&sort=new&limit=25&type=link"
-        req = urllib.request.Request(url, headers={"User-Agent": "CrewSight/1.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
+        resp.raise_for_status()
+        data = resp.json()
         rows = []
         for child in data.get("data", {}).get("children", []):
             post = child.get("data", {})
@@ -255,7 +253,7 @@ def get_reddit_posts() -> list[dict]:
                 "permalink": permalink, "author": post.get("author"),
             })
         cache.set(cache_key, rows, ttl_seconds=CACHE_TTL)
-        logger.info(f"Fetched {len(rows)} Reddit posts via direct fetch")
+        logger.info(f"Fetched {len(rows)} Reddit posts")
         return rows
     except Exception as exc:
         logger.warning(f"Reddit posts skipped: {exc}")
@@ -315,17 +313,12 @@ SELECT
   h.title       AS hn_post,
   h.url         AS hn_url,
   h.points      AS hn_points,
-  r.title       AS reddit_post,
-  r.permalink   AS reddit_url,
-  r.score       AS reddit_score,
   s.title       AS so_question,
   s.link        AS so_url,
   s.score       AS so_score
 FROM gh.issues i
 LEFT JOIN hackernews.stories h
   ON LOWER(h.title) LIKE '%' || LOWER(i.title) || '%'
-LEFT JOIN reddit.posts r
-  ON LOWER(r.title) LIKE '%' || LOWER(i.title) || '%'
 LEFT JOIN stackoverflow.questions s
   ON LOWER(s.title) LIKE '%' || LOWER(i.title) || '%'
 WHERE i.state = 'open'
@@ -353,18 +346,37 @@ def get_issue_landscape() -> list[dict]:
         if rows:
             # Deduplicate: LEFT JOIN may produce multiple rows per issue
             seen: set = set()
-            results = []
+            deduped = []
             for row in rows:
                 n = row.get("issue_number")
                 if n in seen:
                     continue
                 seen.add(n)
+                # Reddit is fetched via urllib (not in JOIN) — add null placeholders
+                row.setdefault("reddit_post", None)
+                row.setdefault("reddit_url", None)
+                row.setdefault("reddit_score", None)
+                deduped.append(row)
+
+            # Enrich with Reddit data from urllib (one API call, shared cache)
+            reddit = get_reddit_posts()
+            results = []
+            for row in deduped:
+                title = (row.get("issue") or "").lower()
+                reddit_hit = next(
+                    (p for p in reddit if title and title in (p.get("title") or "").lower()),
+                    None,
+                )
+                row["reddit_post"]  = reddit_hit.get("title")     if reddit_hit else None
+                row["reddit_url"]   = reddit_hit.get("permalink") if reddit_hit else None
+                row["reddit_score"] = reddit_hit.get("score")     if reddit_hit else None
                 row["activity_score"] = sum([
                     1 if row.get("hn_post") else 0,
-                    1 if row.get("reddit_post") else 0,
+                    1 if reddit_hit else 0,
                     1 if row.get("so_question") else 0,
                 ])
                 results.append(row)
+
             logger.info(f"Cross-source JOIN: {len(results)} issues")
             cache.set(cache_key, results, ttl_seconds=CACHE_TTL)
             return results
@@ -538,17 +550,19 @@ def check_sources() -> dict[str, dict]:
         except CoralError as exc:
             sources[name] = {"active": False, "error": str(exc)[:120]}
 
-    # Reddit uses urllib (Reddit blocks cloud IPs so API tests always fail).
-    # Mark as active based on whether a search term is configured.
+    # Reddit: test actual connectivity with a lightweight request
     try:
-        from config_manager import load_config as _load
-        _term = (_load().get("reddit") or {}).get("search_term", "")
-        sources["reddit"] = {
-            "active": bool(_term),
-            "error": None if _term else "No search term configured",
-        }
-    except Exception:
-        sources["reddit"] = {"active": bool(_current_search_term()), "error": None}
+        import requests as _req
+        term = (_current_search_term() or "test").replace(" ", "+")
+        r = _req.get(
+            f"https://www.reddit.com/search.json?q={term}&limit=1",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=8,
+        )
+        r.raise_for_status()
+        sources["reddit"] = {"active": True, "error": None}
+    except Exception as exc:
+        sources["reddit"] = {"active": False, "error": str(exc)[:120]}
 
     cache.set(cache_key, sources, ttl_seconds=60)
     return sources

@@ -47,10 +47,11 @@ def _get_client() -> anthropic.Anthropic:
 # MCP-based triage (primary path)
 # ---------------------------------------------------------------------------
 
-async def _run_mcp_triage() -> str:
+async def _run_mcp_triage() -> tuple[str, list[dict]]:
     """
     Start coral mcp-stdio, discover its tools, run an agentic Claude loop
     that queries Coral directly via the MCP sql / catalog tools.
+    Returns (summary_text, list of captured tool calls for UI display).
     """
     server = StdioServerParameters(command="coral", args=["mcp-stdio"])
 
@@ -88,6 +89,8 @@ async def _run_mcp_triage() -> str:
                 ),
             }]
 
+            captured_calls: list[dict] = []
+
             for round_num in range(6):
                 response = client.messages.create(
                     model=MODEL,
@@ -98,9 +101,10 @@ async def _run_mcp_triage() -> str:
                 )
 
                 if response.stop_reason == "end_turn":
-                    return "".join(
+                    text = "".join(
                         b.text for b in response.content if hasattr(b, "text")
                     ) or "No triage generated."
+                    return text, captured_calls
 
                 # Execute each MCP tool call
                 tool_results = []
@@ -117,7 +121,6 @@ async def _run_mcp_triage() -> str:
                         result = await session.call_tool(
                             block.name, block.input or {}
                         )
-                        # Flatten MCP content blocks to a string
                         content = "\n".join(
                             c.text
                             for c in (result.content or [])
@@ -125,6 +128,17 @@ async def _run_mcp_triage() -> str:
                         )
                     except Exception as exc:
                         content = f"Tool error: {exc}"
+
+                    # Capture tool call for UI display
+                    call_info: dict = {"tool": block.name, "input": block.input or {}}
+                    if block.name == "sql":
+                        call_info["sql"] = (block.input or {}).get("query", "")
+                        try:
+                            rows = json.loads(content)
+                            call_info["rows"] = len(rows) if isinstance(rows, list) else 1
+                        except Exception:
+                            call_info["rows"] = 0
+                    captured_calls.append(call_info)
 
                     tool_results.append({
                         "type": "tool_result",
@@ -138,19 +152,39 @@ async def _run_mcp_triage() -> str:
                 messages.append({"role": "assistant", "content": response.content})
                 messages.append({"role": "user", "content": tool_results})
 
-    return "Triage complete."
+    return "Triage complete.", captured_calls
 
 
-def generate_triage(issues: list[dict]) -> str:
+def generate_triage(issues: list[dict]) -> tuple[str, list[dict]]:
     """
     Generate triage via Coral MCP (primary), fall back to direct prompt.
-    Called from a thread pool (asyncio.to_thread), so asyncio.run() is safe.
+    Returns (summary_text, mcp_queries) for UI display.
+    Always includes the cross-source JOIN query even in fallback mode.
     """
+    # Build baseline queries that always ran to produce the issue landscape
+    from coral_client import _CROSS_SOURCE_JOIN
+    baseline_queries: list[dict] = [
+        {
+            "tool": "sql",
+            "input": {},
+            "sql": _CROSS_SOURCE_JOIN.strip(),
+            "rows": len(issues),
+        }
+    ]
+
     try:
-        return asyncio.run(_run_mcp_triage())
+        # Use explicit event loop to avoid issues with nested asyncio contexts
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            text, mcp_calls = loop.run_until_complete(_run_mcp_triage())
+            return text, baseline_queries + mcp_calls
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
     except Exception as exc:
         logger.warning("MCP triage failed (%s), using direct fallback", exc)
-        return _direct_triage(issues)
+        return _direct_triage(issues), baseline_queries
 
 
 def _direct_triage(issues: list[dict]) -> str:
