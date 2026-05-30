@@ -1,9 +1,9 @@
 """
 AI triage summarizer for CrewSight.
 
-MCP-first: starts `coral mcp-stdio`, discovers live tools (sql, list_catalog,
-search_catalog, describe_table, list_columns), and lets Claude query Coral
-directly via the MCP protocol. Falls back to a direct prompt if MCP fails.
+Uses NVIDIA NIM API (OpenAI-compatible) for text generation.
+MCP-first: starts coral mcp-stdio and lets the LLM query Coral directly.
+Falls back to direct prompt if MCP fails.
 """
 
 import asyncio
@@ -11,128 +11,143 @@ import json
 import logging
 import os
 
-import anthropic
+from openai import OpenAI
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-6"
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+MODEL = "meta/llama-3.3-70b-instruct"
 
-_MCP_SYSTEM = (
-    "You are an OSS maintainer's intelligence assistant with live SQL access to the "
-    "project's data via Coral. Use list_catalog to discover tables, then sql to query "
-    "gh.issues, hackernews.stories, reddit.posts, and stackoverflow.questions. "
-    "Find recent open issues and check which are being discussed externally. "
-    "Write a prioritized triage briefing — bullet points, max 3 lines per issue, "
-    "skip issues with no external activity."
+_SYSTEM = (
+    "You are an OSS maintainer's intelligence assistant. "
+    "Use the sql tool to query Coral data sources: "
+    "gh.issues, hackernews.stories, reddit.posts, stackoverflow.questions. "
+    "Find recent open issues and check community buzz. "
+    "Write a prioritized triage briefing — bullet points, max 3 lines per issue."
 )
 
 _DETAIL_SYSTEM = (
     "You are an OSS maintainer's assistant. Analyze this GitHub issue and its "
-    "community activity on Hacker News, Reddit, and Stack Overflow. "
-    "Cover: what the issue is about, community discussion, sentiment and urgency, "
-    "and a clear recommended next action. Be specific and actionable."
+    "community activity. Cover: what the issue is about, community sentiment, "
+    "urgency, and a clear recommended next action. Be specific and actionable."
 )
 
+_MCP_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "sql",
+            "description": (
+                "Execute read-only SQL against Coral. "
+                "Schemas: gh (issues, pull_requests), hackernews (stories), "
+                "reddit (posts), stackoverflow (questions)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "SQL query to execute"}
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_catalog",
+            "description": "List available Coral database tables and schemas.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "schema": {"type": "string", "description": "Filter by schema name"},
+                },
+            },
+        },
+    },
+]
 
-def _get_client() -> anthropic.Anthropic:
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+
+def _get_client() -> OpenAI:
+    api_key = os.getenv("NVIDIA_API_KEY")
     if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY is not set.")
-    return anthropic.Anthropic(api_key=api_key)
+        raise ValueError("NVIDIA_API_KEY is not set.")
+    return OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key)
 
 
 # ---------------------------------------------------------------------------
-# MCP-based triage (primary path)
+# MCP triage (primary path)
 # ---------------------------------------------------------------------------
 
 async def _run_mcp_triage() -> tuple[str, list[dict]]:
-    """
-    Start coral mcp-stdio, discover its tools, run an agentic Claude loop
-    that queries Coral directly via the MCP sql / catalog tools.
-    Returns (summary_text, list of captured tool calls for UI display).
-    """
+    """Start coral mcp-stdio and run an agentic loop with NVIDIA LLM."""
     server = StdioServerParameters(command="coral", args=["mcp-stdio"])
 
     async with stdio_client(server) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-
-            # Discover Coral's MCP tools (sql, list_catalog, search_catalog, etc.)
-            tools_response = await session.list_tools()
-            tools = []
-            for t in tools_response.tools:
-                raw = t.inputSchema if isinstance(t.inputSchema, dict) else {}
-                # Anthropic requires input_schema to be type:object at the root
-                schema: dict = {
-                    "type": "object",
-                    "properties": raw.get("properties", {}),
-                }
-                if "required" in raw:
-                    schema["required"] = raw["required"]
-                tools.append({
-                    "name": t.name,
-                    "description": t.description or "",
-                    "input_schema": schema,
-                })
-            logger.info("Coral MCP tools: %s", [t["name"] for t in tools])
+            tool_names = [t.name for t in (await session.list_tools()).tools]
+            logger.info("Coral MCP tools: %s", tool_names)
 
             client = _get_client()
-            messages: list[dict] = [{
-                "role": "user",
-                "content": (
-                    "Use list_catalog to discover available tables, then query "
-                    "gh.issues for recent open items and cross-reference with "
-                    "hackernews.stories, reddit.posts, and stackoverflow.questions "
-                    "to find community buzz. Write a prioritized triage briefing."
-                ),
-            }]
+            messages = [
+                {"role": "system", "content": _SYSTEM},
+                {
+                    "role": "user",
+                    "content": (
+                        "Run ONE sql query to get the 10 most recently updated open issues: "
+                        "SELECT number, title, comments, updated_at FROM gh.issues WHERE state='open' ORDER BY updated_at DESC LIMIT 10. "
+                        "Then run ONE more query for HN: SELECT title, points FROM hackernews.stories LIMIT 10. "
+                        "Then write a short prioritized triage briefing."
+                    ),
+                },
+            ]
 
             captured_calls: list[dict] = []
 
-            for round_num in range(6):
-                response = client.messages.create(
-                    model=MODEL,
-                    max_tokens=2048,
-                    system=_MCP_SYSTEM,
-                    tools=tools,
-                    messages=messages,
-                )
-
-                if response.stop_reason == "end_turn":
-                    text = "".join(
-                        b.text for b in response.content if hasattr(b, "text")
-                    ) or "No triage generated."
-                    return text, captured_calls
-
-                # Execute each MCP tool call
-                tool_results = []
-                for block in response.content:
-                    if block.type != "tool_use":
-                        continue
-                    logger.info(
-                        "MCP [%d] %s: %s",
-                        round_num + 1,
-                        block.name,
-                        json.dumps(block.input or {})[:120],
+            for round_num in range(3):
+                try:
+                    response = client.chat.completions.create(
+                        model=MODEL,
+                        messages=messages,
+                        tools=_MCP_TOOLS,
+                        tool_choice="auto",
+                        max_tokens=2048,
                     )
+                except Exception as api_err:
+                    logger.error("NVIDIA API error (round %d): %s", round_num, api_err)
+                    raise
+
+                choice = response.choices[0]
+                msg = choice.message
+
+                if choice.finish_reason == "stop" or not msg.tool_calls:
+                    return msg.content or "No triage generated.", captured_calls
+
+                # Execute MCP tool calls
+                tool_results = []
+                for tc in msg.tool_calls:
+                    tool_name = tc.function.name
                     try:
-                        result = await session.call_tool(
-                            block.name, block.input or {}
-                        )
+                        args = json.loads(tc.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+
+                    logger.info("MCP [%d] %s: %s", round_num + 1, tool_name, str(args)[:120])
+
+                    try:
+                        result = await session.call_tool(tool_name, args)
                         content = "\n".join(
-                            c.text
-                            for c in (result.content or [])
-                            if hasattr(c, "text")
+                            c.text for c in (result.content or []) if hasattr(c, "text")
                         )
                     except Exception as exc:
                         content = f"Tool error: {exc}"
 
-                    # Capture tool call for UI display
-                    call_info: dict = {"tool": block.name, "input": block.input or {}}
-                    if block.name == "sql":
-                        call_info["sql"] = (block.input or {}).get("query", "")
+                    # Capture for UI display
+                    call_info: dict = {"tool": tool_name, "input": args}
+                    if tool_name == "sql":
+                        call_info["sql"] = args.get("query", "")
                         try:
                             rows = json.loads(content)
                             call_info["rows"] = len(rows) if isinstance(rows, list) else 1
@@ -141,40 +156,31 @@ async def _run_mcp_triage() -> tuple[str, list[dict]]:
                     captured_calls.append(call_info)
 
                     tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
+                        "role": "tool",
+                        "tool_call_id": tc.id,
                         "content": content or "[]",
                     })
 
-                if not tool_results:
-                    break
-
-                messages.append({"role": "assistant", "content": response.content})
-                messages.append({"role": "user", "content": tool_results})
+                # Add assistant message with tool calls, then tool results
+                messages.append({"role": "assistant", "content": msg.content, "tool_calls": [
+                    {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in msg.tool_calls
+                ]})
+                messages.extend(tool_results)
 
     return "Triage complete.", captured_calls
 
 
 def generate_triage(issues: list[dict]) -> tuple[str, list[dict]]:
-    """
-    Generate triage via Coral MCP (primary), fall back to direct prompt.
-    Returns (summary_text, mcp_queries) for UI display.
-    Always includes the cross-source JOIN query even in fallback mode.
-    """
-    # Build baseline queries that always ran to produce the issue landscape
+    """Generate triage via Coral MCP + NVIDIA LLM. Falls back to direct prompt."""
     from coral_client import _CROSS_SOURCE_JOIN
     baseline_queries: list[dict] = [
-        {
-            "tool": "sql",
-            "input": {},
-            "sql": _CROSS_SOURCE_JOIN.strip(),
-            "rows": len(issues),
-        }
+        {"tool": "sql", "input": {}, "sql": _CROSS_SOURCE_JOIN.strip(), "rows": len(issues)}
     ]
 
     try:
-        # Use explicit event loop to avoid issues with nested asyncio contexts
-        loop = asyncio.new_event_loop()
+        import sys
+        loop = asyncio.ProactorEventLoop() if sys.platform == "win32" else asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             text, mcp_calls = loop.run_until_complete(_run_mcp_triage())
@@ -183,12 +189,16 @@ def generate_triage(issues: list[dict]) -> tuple[str, list[dict]]:
             loop.close()
             asyncio.set_event_loop(None)
     except Exception as exc:
-        logger.warning("MCP triage failed (%s), using direct fallback", exc)
+        if hasattr(exc, "exceptions"):
+            for sub in exc.exceptions:  # type: ignore[attr-defined]
+                logger.warning("MCP sub-exception: %s: %s", type(sub).__name__, sub)
+        else:
+            logger.warning("MCP triage failed (%s: %s)", type(exc).__name__, exc)
         return _direct_triage(issues), baseline_queries
 
 
 def _direct_triage(issues: list[dict]) -> str:
-    """Fallback: build context from pre-fetched data, call Claude once."""
+    """Fallback: build context from pre-fetched data, call NVIDIA once."""
     if not issues:
         return "No open issues found."
 
@@ -203,17 +213,11 @@ def _direct_triage(issues: list[dict]) -> str:
     for issue in active[:20]:
         snippets = []
         if issue.get("hn_post"):
-            snippets.append(
-                f'HN: "{str(issue["hn_post"])[:80]}" ({issue.get("hn_points")} pts)'
-            )
+            snippets.append(f'HN: "{str(issue["hn_post"])[:80]}" ({issue.get("hn_points")} pts)')
         if issue.get("reddit_post"):
-            snippets.append(
-                f'Reddit: "{str(issue["reddit_post"])[:80]}" (↑{issue.get("reddit_score")})'
-            )
+            snippets.append(f'Reddit: "{str(issue["reddit_post"])[:80]}" (↑{issue.get("reddit_score")})')
         if issue.get("so_question"):
-            snippets.append(
-                f'SO: "{str(issue["so_question"])[:80]}" (score {issue.get("so_score")})'
-            )
+            snippets.append(f'SO: "{str(issue["so_question"])[:80]}" (score {issue.get("so_score")})')
         lines.append(
             f"• #{issue.get('issue_number')}: {issue.get('issue')}\n"
             f"  Buzz {issue.get('activity_score')}/3 | {' | '.join(snippets)}"
@@ -221,19 +225,21 @@ def _direct_triage(issues: list[dict]) -> str:
 
     try:
         client = _get_client()
-        msg = client.messages.create(
+        resp = client.chat.completions.create(
             model=MODEL,
+            messages=[
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user", "content": "\n".join(lines)},
+            ],
             max_tokens=1024,
-            system=_MCP_SYSTEM,
-            messages=[{"role": "user", "content": "\n".join(lines)}],
         )
-        return msg.content[0].text
+        return resp.choices[0].message.content or "No summary generated."
     except Exception as exc:
         return f"⚠️ AI summary unavailable: {exc}"
 
 
 # ---------------------------------------------------------------------------
-# Issue deep-dive (always direct — pre-fetched data)
+# Issue deep-dive
 # ---------------------------------------------------------------------------
 
 def generate_issue_detail(issue: dict) -> str:
@@ -259,34 +265,30 @@ def generate_issue_detail(issue: dict) -> str:
     if hn_data:
         parts.append(f"\n## Hacker News ({len(hn_data)} stories)")
         for s in hn_data[:5]:
-            parts.append(
-                f"- [{s.get('points', 0)} pts] {s.get('title', '')} — {s.get('url', '')}"
-            )
+            parts.append(f"- [{s.get('points', 0)} pts] {s.get('title', '')} — {s.get('url', '')}")
     if reddit_data:
         parts.append(f"\n## Reddit ({len(reddit_data)} posts)")
         for p in reddit_data[:5]:
-            parts.append(
-                f"- [↑{p.get('score', 0)} r/{p.get('subreddit', '?')}] {p.get('title', '')}"
-            )
+            parts.append(f"- [↑{p.get('score', 0)} r/{p.get('subreddit', '?')}] {p.get('title', '')}")
     if so_data:
         parts.append(f"\n## Stack Overflow ({len(so_data)} questions)")
         for q in so_data[:5]:
             answered = "✓" if q.get("is_answered") else "○"
-            parts.append(
-                f"- {answered} [{q.get('score', 0)} score] {q.get('title', '')}"
-            )
+            parts.append(f"- {answered} [{q.get('score', 0)} score] {q.get('title', '')}")
     if not hn_data and not reddit_data and not so_data:
         parts.append("\n## External activity\nNo matching discussions found.")
 
     try:
         client = _get_client()
-        msg = client.messages.create(
+        resp = client.chat.completions.create(
             model=MODEL,
+            messages=[
+                {"role": "system", "content": _DETAIL_SYSTEM},
+                {"role": "user", "content": "\n".join(parts)},
+            ],
             max_tokens=1024,
-            system=_DETAIL_SYSTEM,
-            messages=[{"role": "user", "content": "\n".join(parts)}],
         )
-        return msg.content[0].text
+        return resp.choices[0].message.content or "No summary generated."
     except Exception as exc:
         logger.error("Issue detail generation failed: %s", exc, exc_info=True)
         return f"⚠️ AI summary unavailable: {exc}"

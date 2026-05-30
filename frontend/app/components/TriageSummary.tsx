@@ -121,10 +121,11 @@ export default function TriageSummary({
                       {TOOL_LABEL[q.tool] ?? q.tool}
                     </span>
                     {q.rows !== undefined && (
-                      <span className="ml-auto text-[10px] text-gray-500">
+                      <span className="text-[10px] text-gray-500">
                         {q.rows} {q.rows === 1 ? 'row' : 'rows'}
                       </span>
                     )}
+                    <CopyBtn text={q.sql ?? JSON.stringify(q.input, null, 2)} />
                   </div>
                   <pre className="px-3 py-2 text-[11px] text-green-300 font-mono whitespace-pre-wrap break-all leading-relaxed">
                     {q.sql ?? JSON.stringify(q.input, null, 2)}
@@ -157,5 +158,17 @@ export default function TriageSummary({
       </div>
 
     </div>
+  )
+}
+
+function CopyBtn({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
+      className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white transition-colors"
+    >
+      {copied ? '✓' : 'Copy'}
+    </button>
   )
 }
